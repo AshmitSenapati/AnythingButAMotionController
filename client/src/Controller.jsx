@@ -3,8 +3,10 @@ import { io } from "socket.io-client";
 import "./Controller.css";
 
 function getServerUrl() {
-  if (import.meta.env.VITE_SERVER_URL) {
-    return import.meta.env.VITE_SERVER_URL.trim().replace(/\/+$/, "");
+  const envUrl =
+    import.meta.env.VITE_SERVER_URL || import.meta.env.VITE_BACKEND_URL;
+  if (envUrl) {
+    return envUrl.trim().replace(/\/+$/, "");
   }
   if (typeof window !== "undefined" && window.location.hostname) {
     const protocol = window.location.protocol === "https:" ? "https:" : "http:";

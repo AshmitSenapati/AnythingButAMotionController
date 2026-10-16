@@ -9,19 +9,33 @@ const app = express();
 const server = http.createServer(app);
 
 const PORT = Number(process.env.PORT) || 3001;
-const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN;
+const CLIENT_ORIGIN =
+  process.env.CLIENT_ORIGIN ||
+  process.env.CLIENT_URL ||
+  process.env.FRONTEND_URL ||
+  process.env.CORS_ORIGIN;
+
+const DEFAULT_ALLOWED_ORIGINS = [
+  "https://anything-but-a-motion-controller.vercel.app",
+];
 
 function isOriginAllowed(origin, callback) {
   // Allow requests without Origin (e.g. server-to-server, curl, tests)
   if (!origin) return callback(null, true);
+
+  const normalizedOrigin = String(origin).trim().replace(/\/+$/, "");
 
   if (CLIENT_ORIGIN) {
     if (CLIENT_ORIGIN === "*") return callback(null, true);
     const allowed = CLIENT_ORIGIN.split(",").map((o) =>
       o.trim().replace(/\/+$/, "")
     );
-    const normalizedOrigin = String(origin).trim().replace(/\/+$/, "");
     if (allowed.includes(normalizedOrigin)) return callback(null, true);
+  }
+
+  // Allow known production Vercel origin
+  if (DEFAULT_ALLOWED_ORIGINS.includes(normalizedOrigin)) {
+    return callback(null, true);
   }
 
   // Allow localhost, 127.0.0.1, IPv6 loopback, and local network IPs (e.g. phone connecting over LAN)
