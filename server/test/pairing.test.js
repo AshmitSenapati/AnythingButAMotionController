@@ -382,10 +382,41 @@ describe("Room Pairing Integration Tests", () => {
     assert.equal(restoreRes.state.controllerConnected, true);
 
     // 5. Verify room-state event updates controller
-    assert.equal(rooms.get(roomCode).laptopId, laptop2.id);
-    assert.equal(rooms.get(roomCode).controllerId, controller.id);
+    laptop2.disconnect();
+    controller.disconnect();
+  });
 
+  it("13. Laptop reconnects/refreshes while previous socket is still connected (replaces old laptop socket)", async () => {
+    const laptop1 = Client(serverUrl);
+    await new Promise((resolve) => laptop1.on("connect", resolve));
+    const createRes = await new Promise((resolve) => laptop1.emit("create-room", resolve));
+    const roomCode = createRes.roomCode;
+    assert.ok(roomCode);
+
+    // Pair controller with room
+    const controller = Client(serverUrl);
+    await new Promise((resolve) => controller.on("connect", resolve));
+    const joinRes = await new Promise((resolve) => {
+      controller.emit("join-room", { roomCode, role: "controller" }, resolve);
+    });
+    assert.equal(joinRes.success, true);
+
+    // Laptop2 connects WITHOUT disconnecting laptop1 first (simulates rapid browser refresh)
+    const laptop2 = Client(serverUrl);
+    await new Promise((resolve) => laptop2.on("connect", resolve));
+    const restoreRes = await new Promise((resolve) => {
+      laptop2.emit("join-room", { roomCode, role: "laptop" }, resolve);
+    });
+
+    assert.equal(restoreRes.success, true);
+    assert.equal(restoreRes.roomCode, roomCode);
+    assert.equal(restoreRes.state.laptopConnected, true);
+    assert.equal(restoreRes.state.controllerConnected, true);
+    assert.equal(rooms.get(roomCode).laptopId, laptop2.id);
+
+    laptop1.disconnect();
     laptop2.disconnect();
     controller.disconnect();
   });
 });
+

@@ -33,7 +33,13 @@ const ROOM_STORAGE_KEY = "abgc_laptop_room_code";
 
 function getPersistedRoomCode() {
   try {
-    const saved = sessionStorage.getItem(ROOM_STORAGE_KEY);
+    let saved = localStorage.getItem(ROOM_STORAGE_KEY);
+    if (!saved) {
+      saved = sessionStorage.getItem(ROOM_STORAGE_KEY);
+      if (saved && /^[A-Z0-9]{6}$/.test(saved.trim().toUpperCase())) {
+        localStorage.setItem(ROOM_STORAGE_KEY, saved.trim().toUpperCase());
+      }
+    }
     if (saved && /^[A-Z0-9]{6}$/.test(saved.trim().toUpperCase())) {
       return saved.trim().toUpperCase();
     }
@@ -46,8 +52,11 @@ function getPersistedRoomCode() {
 function setPersistedRoomCode(code) {
   try {
     if (code) {
-      sessionStorage.setItem(ROOM_STORAGE_KEY, code.trim().toUpperCase());
+      const clean = code.trim().toUpperCase();
+      localStorage.setItem(ROOM_STORAGE_KEY, clean);
+      sessionStorage.setItem(ROOM_STORAGE_KEY, clean);
     } else {
+      localStorage.removeItem(ROOM_STORAGE_KEY);
       sessionStorage.removeItem(ROOM_STORAGE_KEY);
     }
   } catch {
@@ -86,7 +95,7 @@ export default function App() {
   const width = INITIAL_MAZE[0].length * CELL;
   const height = INITIAL_MAZE.length * CELL;
 
-  const [roomCode, setRoomCode] = useState("");
+  const [roomCode, setRoomCode] = useState(getPersistedRoomCode);
   const [serverConnected, setServerConnected] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [controllerConnected, setControllerConnected] = useState(false);
@@ -95,7 +104,7 @@ export default function App() {
   const socketRef = useRef(null);
   const remoteMotionRef = useRef({ x: 0, y: 0, timestamp: 0 });
   const smoothedMotionRef = useRef({ x: 0, y: 0 });
-  const roomCodeRef = useRef("");
+  const roomCodeRef = useRef(getPersistedRoomCode());
   const controllerConnectedRef = useRef(false);
   const isRoomOpInFlightRef = useRef(false);
 
@@ -116,7 +125,7 @@ export default function App() {
     setRecoveryNotice("");
     const serverUrl = getServerUrl();
     console.log(`[LAPTOP] Explicitly creating new room on ${serverUrl}`);
-    socketRef.current.timeout(5000).emit("create-room", (err, result) => {
+    socketRef.current.timeout(8000).emit("create-room", (err, result) => {
       if (result?.success) {
         console.log(`[LAPTOP] New room generated: ${result.roomCode}`);
         setRoomCode(result.roomCode);
@@ -144,7 +153,7 @@ export default function App() {
       isRoomOpInFlightRef.current = true;
       console.log(`[LAPTOP] Emitting create-room to ${serverUrl}`);
 
-      sock.timeout(5000).emit("create-room", (err, result) => {
+      sock.timeout(8000).emit("create-room", (err, result) => {
         isRoomOpInFlightRef.current = false;
         if (!isMounted) return;
         if (result?.success) {
@@ -154,6 +163,7 @@ export default function App() {
           setPersistedRoomCode(result.roomCode);
           setControllerConnected(false);
           controllerConnectedRef.current = false;
+          setRecoveryNotice("");
         } else {
           console.error(`[LAPTOP] create-room failed:`, result?.error || err);
           setRecoveryNotice(
@@ -166,37 +176,68 @@ export default function App() {
     function initRoomSession(sock) {
       const persisted = getPersistedRoomCode();
 
-      if (persisted) {
-        console.log(`[LAPTOP] Attempting to restore persisted room: "${persisted}" on ${serverUrl}`);
-        sock.timeout(5000).emit(
-          "join-room",
-          { roomCode: persisted, role: "laptop" },
-          (err, result) => {
-            if (!isMounted) return;
-            if (result?.success) {
-              console.log(`[LAPTOP] Successfully restored room "${result.roomCode}"`);
-              setRoomCode(result.roomCode);
-              roomCodeRef.current = result.roomCode;
-              setPersistedRoomCode(result.roomCode);
-              const hasController = Boolean(result.state?.controllerConnected);
-              setControllerConnected(hasController);
-              controllerConnectedRef.current = hasController;
-              setRecoveryNotice("");
-            } else {
-              console.warn(`[LAPTOP] Persisted room "${persisted}" expired or removed. Creating new room.`);
-              setPersistedRoomCode("");
-              roomCodeRef.current = "";
-              setRoomCode("");
-              setRecoveryNotice(
-                `Previous room "${persisted}" expired or was removed. Created a new room.`
-              );
-              createNewRoom(sock);
-            }
-          }
-        );
-      } else {
+      if (!persisted) {
         createNewRoom(sock);
+        return;
       }
+
+      if (isRoomOpInFlightRef.current) return;
+      isRoomOpInFlightRef.current = true;
+
+      console.log(`[LAPTOP] Attempting to restore persisted room: "${persisted}" on ${serverUrl}`);
+      sock.timeout(8000).emit(
+        "join-room",
+        { roomCode: persisted, role: "laptop" },
+        (err, result) => {
+          isRoomOpInFlightRef.current = false;
+          if (!isMounted) return;
+
+          if (result?.success) {
+            console.log(`[LAPTOP] Successfully restored room "${result.roomCode}"`);
+            setRoomCode(result.roomCode);
+            roomCodeRef.current = result.roomCode;
+            setPersistedRoomCode(result.roomCode);
+            const hasController = Boolean(result.state?.controllerConnected);
+            setControllerConnected(hasController);
+            controllerConnectedRef.current = hasController;
+            setRecoveryNotice("");
+            return;
+          }
+
+          if (err) {
+            // A network timeout occurred waiting for server acknowledgement.
+            // Do NOT wipe the persisted room code; Render could be cold-starting or experiencing network latency.
+            console.warn(
+              `[LAPTOP] Room restore timed out waiting for server. Retaining persisted code "${persisted}".`,
+              err
+            );
+            setRecoveryNotice("Connecting to existing room...");
+            return;
+          }
+
+          const errorMessage = String(result?.error || "");
+          console.warn(`[LAPTOP] Persisted room restore error: ${errorMessage}`);
+
+          // Authoritative room rejection: only wipe if server definitively confirmed room not found or expired
+          if (/not found|expired|invalid/i.test(errorMessage)) {
+            console.warn(
+              `[LAPTOP] Persisted room "${persisted}" no longer exists on server. Creating new room.`
+            );
+            setPersistedRoomCode("");
+            roomCodeRef.current = "";
+            setRoomCode("");
+            setRecoveryNotice(
+              `Previous room "${persisted}" expired or was removed. Created a new room.`
+            );
+            createNewRoom(sock);
+          } else {
+            console.warn(
+              `[LAPTOP] Non-fatal join error for room "${persisted}". Retaining code in storage.`
+            );
+            setRecoveryNotice(errorMessage);
+          }
+        }
+      );
     }
 
     socket.on("connect", () => {

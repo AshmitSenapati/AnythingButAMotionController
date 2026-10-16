@@ -261,12 +261,20 @@ io.on("connection", (socket) => {
     if (role === "laptop" && room.laptopId && room.laptopId !== socket.id) {
       const existingSocket = io.sockets.sockets.get(room.laptopId);
       if (existingSocket && existingSocket.connected) {
-        const reason = `A laptop is already connected to room "${roomCode}".`;
-        console.log(`[JOIN REJECTED] Socket ${socket.id} - Reason: ${reason}`);
-        callback({ success: false, error: reason });
-        return;
+        console.log(
+          `[JOIN RECOVERY] Active laptop socket ${room.laptopId} replaced by reconnected laptop socket ${socket.id} for room "${roomCode}"`
+        );
+        try {
+          existingSocket.leave(roomCode);
+          existingSocket.data.roomCode = null;
+          existingSocket.data.role = null;
+          existingSocket.disconnect(true);
+        } catch (e) {
+          console.warn(`[JOIN RECOVERY] Error cleaning up previous laptop socket: ${e.message}`);
+        }
+      } else {
+        console.log(`[JOIN RECOVERY] Stale laptop socket ${room.laptopId} replaced by ${socket.id}`);
       }
-      console.log(`[JOIN RECOVERY] Stale laptop socket ${room.laptopId} replaced by ${socket.id}`);
       room.laptopId = null;
     }
 
@@ -279,7 +287,7 @@ io.on("connection", (socket) => {
       if (existingSocket && existingSocket.connected) {
         const reason = `A controller is already connected to room "${roomCode}".`;
         console.log(`[JOIN REJECTED] Socket ${socket.id} - Reason: ${reason}`);
-        callback({ success: false, error: reason });
+        cb({ success: false, error: reason });
         return;
       }
       console.log(`[JOIN RECOVERY] Stale controller socket ${room.controllerId} replaced by ${socket.id}`);
