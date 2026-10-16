@@ -171,6 +171,7 @@ app.get("/health", (req, res) => {
   res.json({
     status: "ok",
     activeRooms: rooms.size,
+    roomCodes: Array.from(rooms.keys()),
     timestamp: Date.now(),
   });
 });
@@ -182,6 +183,7 @@ io.on("connection", (socket) => {
   socket.on("create-room", (callback) => {
     if (typeof callback !== "function") return;
 
+    console.log(`[ROOM CREATE REQUEST] Socket ${socket.id} requested new room`);
     leaveCurrentRoom(socket);
 
     const roomCode = generateRoomCode();
@@ -206,11 +208,15 @@ io.on("connection", (socket) => {
     });
 
     broadcastRoomState(roomCode);
-    console.log(`[ROOM CREATE] Socket ${socket.id} created room ${roomCode}`);
+    console.log(
+      `[ROOM REGISTERED] Room "${roomCode}" registered by socket ${socket.id}. Exists in store: ${rooms.has(
+        roomCode
+      )} (total rooms in store: ${rooms.size})`
+    );
   });
 
   socket.on("join-room", (payload, callback) => {
-    if (typeof callback !== "function") return;
+    const cb = typeof callback === "function" ? callback : () => {};
 
     const rawCode = payload?.roomCode;
     const roomCode = String(rawCode || "")
@@ -220,20 +226,22 @@ io.on("connection", (socket) => {
     const role = payload?.role;
 
     console.log(
-      `[JOIN ATTEMPT] Socket ${socket.id} attempting to join room "${roomCode || rawCode}" as role "${role}"`
+      `[JOIN REQUEST] Socket ${socket.id} requesting join for room "${roomCode}" (raw: "${rawCode}") as role "${role}". Exists in store: ${rooms.has(
+        roomCode
+      )} (active rooms: ${Array.from(rooms.keys()).join(",") || "none"})`
     );
 
     if (!["laptop", "controller"].includes(role)) {
       const reason = `Invalid device role: "${role}". Must be "laptop" or "controller".`;
       console.log(`[JOIN REJECTED] Socket ${socket.id} - Reason: ${reason}`);
-      callback({ success: false, error: reason });
+      cb({ success: false, error: reason });
       return;
     }
 
     if (!isValidRoomCode(roomCode)) {
       const reason = "Invalid room code format. Must be exactly 6 alphanumeric characters.";
       console.log(`[JOIN REJECTED] Socket ${socket.id} - Reason: ${reason}`);
-      callback({ success: false, error: reason });
+      cb({ success: false, error: reason });
       return;
     }
 
@@ -241,8 +249,12 @@ io.on("connection", (socket) => {
 
     if (!room) {
       const reason = `Room "${roomCode}" not found.`;
-      console.log(`[JOIN REJECTED] Socket ${socket.id} - Reason: ${reason}`);
-      callback({ success: false, error: reason });
+      console.log(
+        `[JOIN REJECTED] Socket ${socket.id} - Reason: ${reason} (active rooms: ${
+          Array.from(rooms.keys()).join(",") || "none"
+        })`
+      );
+      cb({ success: false, error: reason });
       return;
     }
 

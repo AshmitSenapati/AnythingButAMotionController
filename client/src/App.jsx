@@ -86,7 +86,7 @@ export default function App() {
   const width = INITIAL_MAZE[0].length * CELL;
   const height = INITIAL_MAZE.length * CELL;
 
-  const [roomCode, setRoomCode] = useState(() => getPersistedRoomCode());
+  const [roomCode, setRoomCode] = useState("");
   const [serverConnected, setServerConnected] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [controllerConnected, setControllerConnected] = useState(false);
@@ -95,7 +95,7 @@ export default function App() {
   const socketRef = useRef(null);
   const remoteMotionRef = useRef({ x: 0, y: 0, timestamp: 0 });
   const smoothedMotionRef = useRef({ x: 0, y: 0 });
-  const roomCodeRef = useRef(getPersistedRoomCode());
+  const roomCodeRef = useRef("");
   const controllerConnectedRef = useRef(false);
   const isRoomOpInFlightRef = useRef(false);
 
@@ -114,8 +114,11 @@ export default function App() {
     if (!socketRef.current || !socketRef.current.connected) return;
     isRoomOpInFlightRef.current = false;
     setRecoveryNotice("");
+    const serverUrl = getServerUrl();
+    console.log(`[LAPTOP] Explicitly creating new room on ${serverUrl}`);
     socketRef.current.timeout(5000).emit("create-room", (err, result) => {
       if (result?.success) {
+        console.log(`[LAPTOP] New room generated: ${result.roomCode}`);
         setRoomCode(result.roomCode);
         roomCodeRef.current = result.roomCode;
         setPersistedRoomCode(result.roomCode);
@@ -139,17 +142,20 @@ export default function App() {
     function createNewRoom(sock) {
       if (isRoomOpInFlightRef.current) return;
       isRoomOpInFlightRef.current = true;
+      console.log(`[LAPTOP] Emitting create-room to ${serverUrl}`);
 
       sock.timeout(5000).emit("create-room", (err, result) => {
         isRoomOpInFlightRef.current = false;
         if (!isMounted) return;
         if (result?.success) {
+          console.log(`[LAPTOP] Room successfully created: ${result.roomCode}`);
           setRoomCode(result.roomCode);
           roomCodeRef.current = result.roomCode;
           setPersistedRoomCode(result.roomCode);
           setControllerConnected(false);
           controllerConnectedRef.current = false;
         } else {
+          console.error(`[LAPTOP] create-room failed:`, result?.error || err);
           setRecoveryNotice(
             result?.error || "Failed to create room. Please verify backend server."
           );
@@ -158,16 +164,17 @@ export default function App() {
     }
 
     function initRoomSession(sock) {
-      const activeRoom = roomCodeRef.current || getPersistedRoomCode();
+      const persisted = getPersistedRoomCode();
 
-      if (activeRoom) {
-        // Attempt restoring room session
+      if (persisted) {
+        console.log(`[LAPTOP] Attempting to restore persisted room: "${persisted}" on ${serverUrl}`);
         sock.timeout(5000).emit(
           "join-room",
-          { roomCode: activeRoom, role: "laptop" },
+          { roomCode: persisted, role: "laptop" },
           (err, result) => {
             if (!isMounted) return;
             if (result?.success) {
+              console.log(`[LAPTOP] Successfully restored room "${result.roomCode}"`);
               setRoomCode(result.roomCode);
               roomCodeRef.current = result.roomCode;
               setPersistedRoomCode(result.roomCode);
@@ -176,12 +183,12 @@ export default function App() {
               controllerConnectedRef.current = hasController;
               setRecoveryNotice("");
             } else {
-              // Stored room expired or not found; explain recovery failure and create fresh room
+              console.warn(`[LAPTOP] Persisted room "${persisted}" expired or removed. Creating new room.`);
               setPersistedRoomCode("");
               roomCodeRef.current = "";
               setRoomCode("");
               setRecoveryNotice(
-                `Previous room "${activeRoom}" expired or was removed. Created a new room.`
+                `Previous room "${persisted}" expired or was removed. Created a new room.`
               );
               createNewRoom(sock);
             }
