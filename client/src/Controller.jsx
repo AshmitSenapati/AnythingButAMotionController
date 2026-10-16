@@ -24,7 +24,16 @@ export default function Controller() {
   const pairedRoomRef = useRef("");
   const calibratedRef = useRef(false);
 
-  const [roomCode, setRoomCode] = useState("");
+  const [roomCode, setRoomCode] = useState(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const r = params.get("room");
+      if (r && /^[A-Z0-9]{6}$/.test(r.trim().toUpperCase())) {
+        return r.trim().toUpperCase();
+      }
+    }
+    return "";
+  });
   const [connected, setConnected] = useState(false);
   const [isPaired, setIsPaired] = useState(false);
   const [pairedRoom, setPairedRoom] = useState("");
@@ -300,11 +309,11 @@ export default function Controller() {
       <header className="controller-header">
         <div className="controller-logo">M</div>
         <div>
-          <p className="controller-eyebrow">ANYTHING BUT A</p>
-          <h1>Motion Controller</h1>
+          <p className="controller-eyebrow">EXPERIMENTAL PERIPHERAL</p>
+          <h1>MOTION LAB CONTROLLER</h1>
         </div>
         <span className={`connection-pill ${connected ? "online" : ""}`}>
-          {connected ? "SERVER ONLINE" : "CONNECTING"}
+          {connected ? "BACKEND ONLINE" : "CONNECTING"}
         </span>
       </header>
 

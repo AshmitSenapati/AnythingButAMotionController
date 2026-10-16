@@ -1,7 +1,7 @@
-
 import { useCallback, useEffect, useRef, useState } from "react";
 import "./App.css";
 import { io } from "socket.io-client";
+import { QRCodeSVG } from "qrcode.react";
 
 const INITIAL_MAZE = [
   "111111111111111",
@@ -90,7 +90,7 @@ export default function App() {
   const [status, setStatus] = useState("ready");
   const [elapsed, setElapsed] = useState(0);
   const [bestTime, setBestTime] = useState(null);
-  const [moves, setMoves] = useState(0);
+  const [copied, setCopied] = useState(false);
 
   const width = INITIAL_MAZE[0].length * CELL;
   const height = INITIAL_MAZE.length * CELL;
@@ -100,6 +100,13 @@ export default function App() {
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [controllerConnected, setControllerConnected] = useState(false);
   const [recoveryNotice, setRecoveryNotice] = useState("");
+
+  const [telemetry, setTelemetry] = useState({
+    x: 0,
+    y: 0,
+    activeDir: { up: false, down: false, left: false, right: false },
+    activeSource: "UNPAIRED",
+  });
 
   const socketRef = useRef(null);
   const remoteMotionRef = useRef({ x: 0, y: 0, timestamp: 0 });
@@ -115,9 +122,15 @@ export default function App() {
     previousTimeRef.current = 0;
     elapsedRef.current = 0;
     setElapsed(0);
-    setMoves(0);
     setStatus("playing");
   }, []);
+
+  const handleCopyCode = useCallback(() => {
+    if (!roomCode) return;
+    navigator.clipboard.writeText(roomCode);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }, [roomCode]);
 
   const handleExplicitNewRoom = useCallback(() => {
     if (!socketRef.current || !socketRef.current.connected) return;
@@ -135,6 +148,47 @@ export default function App() {
         controllerConnectedRef.current = false;
       }
     });
+  }, []);
+
+  // Telemetry poll to update dashboard gauges smoothly
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const keys = keysRef.current || {};
+      let kx = 0;
+      let ky = 0;
+      if (keys.arrowleft || keys.left || keys.a || keys.keya) kx -= 1;
+      if (keys.arrowright || keys.right || keys.d || keys.keyd) kx += 1;
+      if (keys.arrowup || keys.up || keys.w || keys.keyw) ky -= 1;
+      if (keys.arrowdown || keys.down || keys.s || keys.keys) ky += 1;
+
+      const sm = smoothedMotionRef.current || { x: 0, y: 0 };
+      const isControllerActive =
+        controllerConnectedRef.current && Math.hypot(sm.x, sm.y) > 0.05;
+      const isKeyboardActive = kx !== 0 || ky !== 0;
+
+      const effX = isControllerActive ? sm.x : kx;
+      const effY = isControllerActive ? sm.y : ky;
+
+      setTelemetry({
+        x: effX,
+        y: effY,
+        activeDir: {
+          up: effY < -0.15,
+          down: effY > 0.15,
+          left: effX < -0.15,
+          right: effX > 0.15,
+        },
+        activeSource: isControllerActive
+          ? "MOTION CONTROLLER"
+          : isKeyboardActive
+          ? "KEYBOARD FALLBACK"
+          : controllerConnectedRef.current
+          ? "CONTROLLER STANDBY"
+          : "KEYBOARD READY",
+      });
+    }, 75);
+
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -205,8 +259,6 @@ export default function App() {
           }
 
           if (err) {
-            // A network timeout occurred waiting for server acknowledgement.
-            // Do NOT wipe the persisted room code; Render could be cold-starting or experiencing network latency.
             console.warn(
               `[LAPTOP] Room restore timed out waiting for server. Retaining persisted code "${persisted}".`,
               err
@@ -218,7 +270,6 @@ export default function App() {
           const errorMessage = String(result?.error || "");
           console.warn(`[LAPTOP] Persisted room restore error: ${errorMessage}`);
 
-          // Authoritative room rejection: only wipe if server definitively confirmed room not found or expired
           if (/not found|expired|invalid/i.test(errorMessage)) {
             console.warn(
               `[LAPTOP] Persisted room "${persisted}" no longer exists on server. Creating new room.`
@@ -264,7 +315,6 @@ export default function App() {
         setControllerConnected(isConnected);
         controllerConnectedRef.current = isConnected;
 
-        // Reset motion data immediately if controller unpairs or disconnects
         if (!isConnected) {
           remoteMotionRef.current = { x: 0, y: 0, timestamp: 0 };
           smoothedMotionRef.current = { x: 0, y: 0 };
@@ -328,7 +378,6 @@ export default function App() {
           "keyd",
         ].includes(code);
 
-      // Prevent arrow-key page scrolling only while the game is capturing those keys
       if (status === "playing" && (isMovementKey || key === " ")) {
         event.preventDefault();
       } else if (status !== "playing" && (key === " " || isMovementKey)) {
@@ -340,7 +389,6 @@ export default function App() {
         keysRef.current[code] = true;
       }
 
-      // If user presses movement key or space while not playing, start or restart game
       if (status !== "playing" && (key === " " || isMovementKey)) {
         resetGame();
       }
@@ -372,6 +420,7 @@ export default function App() {
 
   useEffect(() => {
     const canvas = canvasRef.current;
+    if (!canvas) return;
     const ctx = canvas.getContext("2d");
     let running = true;
 
@@ -401,7 +450,6 @@ export default function App() {
         return true;
       }
 
-      // Check 4 cardinal points (top, bottom, left, right)
       if (
         isWall(x, y - BALL_RADIUS) ||
         isWall(x, y + BALL_RADIUS) ||
@@ -411,7 +459,6 @@ export default function App() {
         return true;
       }
 
-      // Check 4 diagonal points along circle perimeter (r * sqrt(2)/2)
       const diag = BALL_RADIUS * 0.7071;
       return (
         isWall(x - diag, y - diag) ||
@@ -422,7 +469,7 @@ export default function App() {
     }
 
     function drawMaze() {
-      ctx.fillStyle = "#0a1020";
+      ctx.fillStyle = "#080b12";
       ctx.fillRect(0, 0, width, height);
 
       mazeRef.current.forEach((row, rowIndex) => {
@@ -431,16 +478,19 @@ export default function App() {
           const y = rowIndex * CELL;
 
           if (cell === 1) {
-            ctx.fillStyle = "#273958";
+            ctx.fillStyle = "#151e2d";
             ctx.fillRect(x + 1, y + 1, CELL - 2, CELL - 2);
+            ctx.strokeStyle = "#1e2c44";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x + 1, y + 1, CELL - 2, CELL - 2);
           } else if (cell === 2) {
-            ctx.fillStyle = "#123c32";
+            ctx.fillStyle = "rgba(212, 255, 0, 0.12)";
             ctx.fillRect(x, y, CELL, CELL);
             ctx.beginPath();
             ctx.arc(x + CELL / 2, y + CELL / 2, 9, 0, Math.PI * 2);
-            ctx.fillStyle = "#34f5a1";
-            ctx.shadowColor = "#34f5a1";
-            ctx.shadowBlur = 14;
+            ctx.fillStyle = "#d4ff00";
+            ctx.shadowColor = "rgba(212, 255, 0, 0.85)";
+            ctx.shadowBlur = 18;
             ctx.fill();
             ctx.shadowBlur = 0;
           }
@@ -465,7 +515,6 @@ export default function App() {
         let ax;
         let ay;
 
-        // Remote controller motion processing
         let hasActiveControllerInput = false;
         if (controllerConnectedRef.current) {
           const smoothingSpeed = 15;
@@ -488,7 +537,6 @@ export default function App() {
           smoothedMotionRef.current = { x: 0, y: 0 };
         }
 
-        // Keyboard input processing (Arrow keys + WASD)
         let kx = 0;
         let ky = 0;
         if (keys.arrowleft || keys.left || keys.a || keys.keya) kx -= 1;
@@ -498,7 +546,6 @@ export default function App() {
 
         const hasKeyboardInput = kx !== 0 || ky !== 0;
 
-        // Arbitration: combine safely if both active, or use active source directly
         if (hasActiveControllerInput && hasKeyboardInput) {
           const kMag = Math.hypot(kx, ky) || 1;
           ax = smoothedMotionRef.current.x + kx / kMag;
@@ -583,10 +630,11 @@ export default function App() {
 
       drawMaze();
 
+      // Draw player ball (Cool Cyan with glowing core)
       ctx.beginPath();
       ctx.arc(ball.x, ball.y, BALL_RADIUS, 0, Math.PI * 2);
-      ctx.fillStyle = "#70a5ff";
-      ctx.shadowColor = "#4e83ff";
+      ctx.fillStyle = "#00f0ff";
+      ctx.shadowColor = "rgba(0, 240, 255, 0.85)";
       ctx.shadowBlur = 18;
       ctx.fill();
       ctx.shadowBlur = 0;
@@ -621,258 +669,438 @@ export default function App() {
     return () => clearInterval(timer);
   }, [status]);
 
-  const handleKeyHelp = () => {
-    setMoves((count) => count + 1);
-  };
+  const controllerUrl =
+    typeof window !== "undefined" && roomCode
+      ? `${window.location.origin}/controller?room=${roomCode}`
+      : "";
 
   return (
     <main className="app">
+      {/* ====================================================================
+          A. Header / Wordmark
+          ==================================================================== */}
       <header className="topbar">
-        <div className="brand">
-          <div className="brand-icon">M</div>
-          <div>
-            <p className="eyebrow">ANYTHING BUT A</p>
-            <h1>Game Controller</h1>
+        <a href="/" className="brand" aria-label="MOTION LAB Home">
+          <div className="brand-icon-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="5" y="2" width="14" height="20" rx="3" />
+              <path d="M12 18h.01" />
+              <path d="M2 12a10 10 0 0 1 3-7" strokeDasharray="2 2" stroke="var(--accent-lime)" />
+              <path d="M22 12a10 10 0 0 1-3 7" strokeDasharray="2 2" stroke="var(--accent-cyan)" />
+            </svg>
           </div>
-        </div>
-        <div className="live-badge">
-          <span />
-          MAZE MODE
-        </div>
-      </header>
+          <div className="brand-info">
+            <p className="brand-eyebrow">EXPERIMENTAL PERIPHERAL LAB</p>
+            <h1 className="brand-title">
+              MOTION <span>LAB</span>
+            </h1>
+          </div>
+        </a>
 
-      <section className="hero">
-        <p className="eyebrow">MOTION ARCADE / 001</p>
-        <h2>Find your <span>way out.</span></h2>
-        <p className="subtitle">
-          Navigate the maze. Reach the green exit. Don't hit the walls.
-        </p>
-      </section>
-
-      <section className="game-layout">
-        <div className="game-panel">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">CURRENT CHALLENGE</p>
-              <h3>The Neon Labyrinth</h3>
-            </div>
-            <span className="level-tag">LEVEL 01</span>
+        <div className="topbar-meta">
+          <div className="system-badge" title="Socket.IO Backend Status">
+            <span
+              className={`pulse-dot ${
+                serverConnected
+                  ? "online"
+                  : isReconnecting
+                  ? "reconnecting"
+                  : "offline"
+              }`}
+            />
+            BACKEND:{" "}
+            {serverConnected
+              ? "ONLINE"
+              : isReconnecting
+              ? "RECONNECTING"
+              : "OFFLINE"}
           </div>
 
           <div
-            className="canvas-wrap"
+            className="system-badge"
+            style={{
+              borderColor: controllerConnected ? "rgba(212, 255, 0, 0.3)" : undefined,
+              color: controllerConnected ? "var(--accent-lime)" : undefined,
+            }}
+          >
+            ● CONTROLLER:{" "}
+            {controllerConnected ? "LINKED" : "AWAITING PAIR"}
+          </div>
+        </div>
+      </header>
+
+      {/* ====================================================================
+          B. Hero Section
+          ==================================================================== */}
+      <section className="hero">
+        <div className="hero-content">
+          <div className="hero-eyebrow">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+            </svg>
+            MOTION TELEMETRY SYSTEM // 001
+          </div>
+          <h2 className="hero-headline">
+            YOUR PHONE. <em>YOUR MOVEMENT.</em> YOUR GAME.
+          </h2>
+          <p className="hero-description">
+            Turn your smartphone into a motion-powered controller. No dedicated
+            gaming hardware required. Real-time accelerometer telemetry and
+            virtual analog control right from your browser.
+          </p>
+        </div>
+
+        <div className="hero-motion-graphic" aria-hidden="true">
+          <svg className="motion-radar-svg" viewBox="0 0 200 200" fill="none">
+            {/* Concentric Gimbal Rings */}
+            <circle cx="100" cy="100" r="90" stroke="#1c2536" strokeWidth="1" strokeDasharray="3 3" />
+            <circle cx="100" cy="100" r="66" stroke="#243044" strokeWidth="1.5" />
+            <circle cx="100" cy="100" r="42" stroke="rgba(0, 240, 255, 0.25)" strokeWidth="1" />
+            <circle cx="100" cy="100" r="16" stroke="rgba(212, 255, 0, 0.3)" strokeWidth="1.5" />
+
+            {/* Axes */}
+            <line x1="100" y1="6" x2="100" y2="194" stroke="#1f2c42" strokeWidth="1" />
+            <line x1="6" y1="100" x2="194" y2="100" stroke="#1f2c42" strokeWidth="1" />
+
+            {/* Degree Marks */}
+            <text x="104" y="24" fill="#5e6b7d" fontSize="8" fontFamily="DM Mono">0° N</text>
+            <text x="168" y="96" fill="#5e6b7d" fontSize="8" fontFamily="DM Mono">+90°</text>
+            <text x="104" y="188" fill="#5e6b7d" fontSize="8" fontFamily="DM Mono">180°</text>
+            <text x="12" y="96" fill="#5e6b7d" fontSize="8" fontFamily="DM Mono">-90°</text>
+
+            {/* Motion Vector Sweep */}
+            <path d="M 100 100 L 160 40" stroke="var(--accent-cyan)" strokeWidth="2" strokeLinecap="round" />
+            <circle cx="160" cy="40" r="4" fill="var(--accent-cyan)" />
+            <circle cx="100" cy="100" r="3" fill="var(--accent-lime)" />
+          </svg>
+        </div>
+      </section>
+
+      {/* ====================================================================
+          C. Main Layout: Game Arena + Hardware Session Sidebar
+          ==================================================================== */}
+      <div className="main-layout">
+        {/* Game Panel */}
+        <section className="panel-card" aria-label="Game Canvas Arena">
+          <div className="panel-header">
+            <div className="panel-title-wrap">
+              <span className="panel-tag">ARENA // 01</span>
+              <h3 className="panel-title">Neon Labyrinth</h3>
+            </div>
+            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "11px",
+                  color: "var(--text-muted)",
+                }}
+              >
+                TARGET:
+              </span>
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "11px",
+                  color: "var(--accent-lime)",
+                  fontWeight: 600,
+                }}
+              >
+                GREEN PORTAL
+              </span>
+            </div>
+          </div>
+
+          <div
+            className="game-viewport-wrap"
             tabIndex={0}
             onClick={() => canvasRef.current?.focus()}
-            style={{ outline: "none" }}
+            aria-label="Interactive Maze Canvas"
           >
+            {/* Calibration Corner Ticks */}
+            <span className="corner-tick top-left" />
+            <span className="corner-tick top-right" />
+            <span className="corner-tick bottom-left" />
+            <span className="corner-tick bottom-right" />
+
             <canvas
               ref={canvasRef}
               tabIndex={0}
               width={width}
               height={height}
-              aria-label="Maze game. Use arrow keys or WASD to move the blue ball to the green exit."
-              style={{ outline: "none" }}
+              aria-label="Maze game canvas. Steer the cyan orb to the lime goal using tilt or keys."
             />
+
             {status !== "playing" && (
               <div className="game-overlay">
-                <div className="overlay-card">
-                  <div className="overlay-symbol">
-                    {status === "won" ? "✓" : "↗"}
+                <div className="overlay-modal">
+                  <div
+                    className={`overlay-badge ${
+                      status === "won" ? "victory" : "ready"
+                    }`}
+                  >
+                    {status === "won" ? "STAGE COMPLETE" : "SYSTEM ARMED"}
                   </div>
                   <h3>
                     {status === "won"
-                      ? "Maze conquered!"
-                      : "Ready to roll?"}
+                      ? "Labyrinth Conquered!"
+                      : "Ready to Roll?"}
                   </h3>
                   <p>
                     {status === "won"
-                      ? `You escaped in ${elapsed} seconds.`
-                      : "Reach the green exit using your keyboard."}
+                      ? `Escape executed in ${elapsed} seconds with flawless navigation.`
+                      : "Tilt your paired phone controller or use WASD / Arrow keys to reach the green exit."}
                   </p>
-                  <button className="primary-button" onClick={resetGame}>
-                    {status === "won" ? "Play again" : "Start game"}
+                  <button className="btn-primary" onClick={resetGame}>
+                    {status === "won" ? "Run Arena Again" : "Engage Simulator"}
                   </button>
                 </div>
               </div>
             )}
           </div>
 
-          <div className="game-footer">
-            <span><i className="blue-dot" /> YOU</span>
-            <span><i className="green-dot" /> EXIT</span>
-            <span>WALLS = OBSTACLES</span>
+          <div className="game-footer-strip">
+            <div className="legend-group">
+              <span className="legend-item">
+                <i className="legend-dot orb" /> PLAYER ORB
+              </span>
+              <span className="legend-item">
+                <i className="legend-dot goal" /> EXIT PORTAL
+              </span>
+              <span className="legend-item">
+                <i className="legend-dot wall" /> BARRIERS
+              </span>
+            </div>
+            <div>STATUS: {status.toUpperCase()}</div>
           </div>
-        </div>
+        </section>
 
+        {/* Sidebar Controls */}
         <aside className="sidebar">
-          <div className="stat-card">
-            <p className="eyebrow">TIME ELAPSED</p>
-            <div className="stat-value">{String(elapsed).padStart(2, "0")}<span>s</span></div>
-            <p className="stat-caption">Beat your personal best.</p>
-          </div>
-
-          <div className="stat-card">
-            <p className="eyebrow">PERSONAL BEST</p>
-            <div className="stat-value">
-              {bestTime === null ? "--" : bestTime}<span>{bestTime === null ? "" : "s"}</span>
-            </div>
-            <p className="stat-caption">Fastest escape this session.</p>
-          </div>
-
-          <div className="control-card">
-            <p className="eyebrow">HOW TO PLAY</p>
-            <div className="key-row">
-              <div className="key">↑</div>
-              <div className="key">←</div>
-              <div className="key">↓</div>
-              <div className="key">→</div>
-            </div>
-            <p>Arrow keys or <b>W A S D</b> to move.</p>
-            <p className="muted">Mobile tilt controls are coming next.</p>
-            <button
-              className="secondary-button"
-              onClick={handleKeyHelp}
-              title="Demo interaction counter"
-            >
-              Controls checked · {moves}
-            </button>
-          </div>
-
-          <div className="control-card">
-            <p className="eyebrow">PHONE PAIRING</p>
-
-            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "12px" }}>
+          {/* 1. Session Token Card */}
+          <div className="session-card">
+            <div className="session-card-header">
+              <span className="session-card-title">PAIRING IDENTIFIER</span>
               <span
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "4px",
-                  fontSize: "9px",
-                  fontFamily: '"DM Mono", monospace',
-                  padding: "3px 6px",
-                  borderRadius: "4px",
-                  background: serverConnected
-                    ? "#10251c"
-                    : isReconnecting
-                    ? "#2d2314"
-                    : "#281b21",
-                  color: serverConnected
-                    ? "#70f4b3"
-                    : isReconnecting
-                    ? "#ffd166"
-                    : "#ffb3b3",
-                  border: `1px solid ${
-                    serverConnected
-                      ? "#20553d"
-                      : isReconnecting
-                      ? "#684f1a"
-                      : "#5b2c3a"
-                  }`,
-                }}
+                className={`session-state-pill ${
+                  controllerConnected ? "paired" : "waiting"
+                }`}
               >
-                ● SERVER{" "}
-                {serverConnected
-                  ? "ONLINE"
-                  : isReconnecting
-                  ? "RECONNECTING..."
-                  : "OFFLINE"}
-              </span>
-
-              <span
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "4px",
-                  fontSize: "9px",
-                  fontFamily: '"DM Mono", monospace',
-                  padding: "3px 6px",
-                  borderRadius: "4px",
-                  background: controllerConnected ? "#10251c" : "#172238",
-                  color: controllerConnected ? "#34f5a1" : "#8ea0bd",
-                  border: `1px solid ${controllerConnected ? "#20553d" : "#2d3d57"}`,
-                }}
-              >
-                ● {controllerConnected ? "CONTROLLER PAIRED" : "WAITING FOR CONTROLLER"}
+                {controllerConnected ? "● CONTROLLER BOUND" : "○ SCAN / ENTER TOKEN"}
               </span>
             </div>
-
-            <h3>
-              {controllerConnected
-                ? "Controller connected"
-                : roomCode
-                ? "Waiting for controller"
-                : isReconnecting
-                ? "Reconnecting to server..."
-                : "Connecting to server"}
-            </h3>
-
-            <p className="stat-caption">
-              {controllerConnected
-                ? "Phone controller paired & active! Tilt to move."
-                : roomCode
-                ? "Controller disconnected · Enter code on phone to pair."
-                : isReconnecting
-                ? "Reconnecting to backend..."
-                : "Waiting for room code..."}
-            </p>
 
             {recoveryNotice && (
               <div
                 style={{
                   fontSize: "11px",
-                  padding: "6px 8px",
-                  borderRadius: "4px",
-                  background: "#2a1c10",
+                  padding: "8px 10px",
+                  borderRadius: "6px",
+                  background: "#22170d",
                   color: "#ffc078",
-                  border: "1px solid #6b3e14",
-                  marginTop: "8px",
-                  marginBottom: "8px",
+                  border: "1px solid #573315",
+                  marginBottom: "12px",
                 }}
               >
                 {recoveryNotice}
               </div>
             )}
 
-            <div
-              style={{
-                fontSize: "28px",
-                letterSpacing: "5px",
-                fontWeight: 700,
-                color: controllerConnected ? "#34f5a1" : "#70f4b3",
-                marginTop: "12px",
-              }}
-            >
-              {roomCode || "------"}
+            <div className="token-container">
+              <span className="token-label">SESSION TOKEN</span>
+              <div className={`token-value ${controllerConnected ? "paired" : ""}`}>
+                {roomCode || "------"}
+              </div>
             </div>
 
-            <div style={{ marginTop: "12px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            {/* QR Code Section */}
+            {roomCode && (
+              <div className="qr-preview-row">
+                <div className="qr-box">
+                  <QRCodeSVG
+                    value={controllerUrl}
+                    size={92}
+                    bgColor="transparent"
+                    fgColor="#d4ff00"
+                    level="M"
+                  />
+                </div>
+                <div className="qr-copy">
+                  <p className="qr-copy-title">Instant Mobile Link</p>
+                  <p className="qr-copy-desc">
+                    Point your camera or Expo controller to connect directly to this session.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="session-actions">
               <button
-                className="secondary-button"
+                className="btn-secondary"
                 disabled={!roomCode}
-                onClick={() => navigator.clipboard.writeText(roomCode)}
+                onClick={handleCopyCode}
+                title="Copy pairing token to clipboard"
               >
-                Copy room code
+                {copied ? "✓ Copied!" : "Copy Token"}
               </button>
               <button
-                className="secondary-button"
+                className="btn-secondary"
                 disabled={!serverConnected}
                 onClick={handleExplicitNewRoom}
-                title="Generate a fresh room code"
+                title="Generate a fresh room token"
               >
-                New room
+                New Session
               </button>
             </div>
           </div>
 
-          <button className="reset-button" onClick={resetGame}>
-            ↻ &nbsp; Restart maze
+          {/* 2. Live Telemetry / Controller Status Visualization */}
+          <div className="telemetry-card">
+            <div className="telemetry-header">
+              <span className="telemetry-title">LIVE INPUT TELEMETRY</span>
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "10px",
+                  color: controllerConnected ? "var(--accent-lime)" : "var(--text-muted)",
+                }}
+              >
+                {controllerConnected ? "STREAMING 30HZ" : "KEYBOARD MODE"}
+              </span>
+            </div>
+
+            <div className="telemetry-grid">
+              {/* Gyro Compass Crosshair */}
+              <div className="gyro-compass" title="Live motion deflection vector">
+                <div className="compass-ring" />
+                <div className="compass-axis-h" />
+                <div className="compass-axis-v" />
+                <div
+                  className={`compass-dot ${
+                    telemetry.x === 0 && telemetry.y === 0 ? "inactive" : ""
+                  }`}
+                  style={{
+                    transform: `translate(${telemetry.x * 38}px, ${
+                      telemetry.y * 38
+                    }px)`,
+                  }}
+                />
+              </div>
+
+              {/* Arrow Matrix & Source Indicator */}
+              <div className="direction-matrix">
+                <div className="arrow-pad" aria-label="Active directional inputs">
+                  <div
+                    className={`arrow-key up ${
+                      telemetry.activeDir.up ? "active" : ""
+                    }`}
+                  >
+                    ↑
+                  </div>
+                  <div
+                    className={`arrow-key left ${
+                      telemetry.activeDir.left ? "active" : ""
+                    }`}
+                  >
+                    ←
+                  </div>
+                  <div
+                    className={`arrow-key down ${
+                      telemetry.activeDir.down ? "active" : ""
+                    }`}
+                  >
+                    ↓
+                  </div>
+                  <div
+                    className={`arrow-key right ${
+                      telemetry.activeDir.right ? "active" : ""
+                    }`}
+                  >
+                    →
+                  </div>
+                </div>
+
+                <div className="active-source-badge">
+                  SOURCE: <span>{telemetry.activeSource}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 3. Performance Metrics (Timer & Personal Best) */}
+          <div className="stats-strip">
+            <div className="stat-metric">
+              <div className="stat-metric-label">TIME ELAPSED</div>
+              <div className="stat-metric-value">
+                {String(elapsed).padStart(2, "0")}
+                <small>s</small>
+              </div>
+            </div>
+
+            <div className="stat-metric">
+              <div className="stat-metric-label">RECORD ESCAPE</div>
+              <div className="stat-metric-value">
+                {bestTime === null ? "--" : bestTime}
+                <small>{bestTime === null ? "" : "s"}</small>
+              </div>
+            </div>
+          </div>
+
+          <button className="btn-restart-game" onClick={resetGame}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.19" />
+            </svg>
+            Restart Arena Run
           </button>
         </aside>
+      </div>
+
+      {/* ====================================================================
+          E. Instructions / 3-Step Onboarding
+          ==================================================================== */}
+      <section className="onboarding-section">
+        <div className="onboarding-header">
+          <p className="onboarding-eyebrow">QUICK START PROTOCOL</p>
+          <h3 className="onboarding-title">How Motion Lab Works</h3>
+        </div>
+
+        <div className="steps-grid">
+          <div className="step-card">
+            <span className="step-number">STEP 01</span>
+            <h4>Host Arena on Laptop</h4>
+            <p>
+              The labyrinth physics engine executes locally in your browser at 60 FPS.
+              Keyboard WASD / Arrow controls are active as an immediate fallback.
+            </p>
+          </div>
+
+          <div className="step-card">
+            <span className="step-number">STEP 02</span>
+            <h4>Link Mobile Controller</h4>
+            <p>
+              Open the Expo Go app or scan the session QR code with your phone camera.
+              Enter your 6-character hardware token to securely bind the device.
+            </p>
+          </div>
+
+          <div className="step-card">
+            <span className="step-number">STEP 03</span>
+            <h4>Drive with Pure Motion</h4>
+            <p>
+              Tilt your phone in physical space or drag the tactile analog thumbstick
+              to steer the orb around obstacles and conquer the maze.
+            </p>
+          </div>
+        </div>
       </section>
 
-      <footer className="page-footer">
-        <span>BUILT FOR PLAY. POWERED BY MOTION.</span>
-        <span>ABGC © 2026</span>
+      {/* ====================================================================
+          Footer
+          ==================================================================== */}
+      <footer className="site-footer">
+        <div className="footer-left">
+          <span>MOTION LAB</span> // EXPERIMENTAL GAMING PERIPHERAL
+        </div>
+        <div>BUILT FOR ZERO-LATENCY PLAY · 2026</div>
       </footer>
     </main>
   );
