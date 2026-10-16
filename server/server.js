@@ -17,8 +17,11 @@ function isOriginAllowed(origin, callback) {
 
   if (CLIENT_ORIGIN) {
     if (CLIENT_ORIGIN === "*") return callback(null, true);
-    const allowed = CLIENT_ORIGIN.split(",").map((o) => o.trim());
-    if (allowed.includes(origin)) return callback(null, true);
+    const allowed = CLIENT_ORIGIN.split(",").map((o) =>
+      o.trim().replace(/\/+$/, "")
+    );
+    const normalizedOrigin = String(origin).trim().replace(/\/+$/, "");
+    if (allowed.includes(normalizedOrigin)) return callback(null, true);
   }
 
   // Allow localhost, 127.0.0.1, IPv6 loopback, and local network IPs (e.g. phone connecting over LAN)

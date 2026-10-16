@@ -57,7 +57,7 @@ function setPersistedRoomCode(code) {
 
 function getServerUrl() {
   if (import.meta.env.VITE_SERVER_URL) {
-    return import.meta.env.VITE_SERVER_URL;
+    return import.meta.env.VITE_SERVER_URL.trim().replace(/\/+$/, "");
   }
   if (typeof window !== "undefined" && window.location.hostname) {
     const protocol = window.location.protocol === "https:" ? "https:" : "http:";
