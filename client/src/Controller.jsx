@@ -307,10 +307,10 @@ export default function Controller() {
   return (
     <main className="controller-page">
       <header className="controller-header">
-        <div className="controller-logo">M</div>
+        <div className="controller-logo">🎮</div>
         <div>
-          <p className="controller-eyebrow">EXPERIMENTAL PERIPHERAL</p>
-          <h1>MOTION LAB CONTROLLER</h1>
+          <p className="controller-eyebrow">MOTION CONTROLLER</p>
+          <h1>Anything but a Game Controller</h1>
         </div>
         <span className={`connection-pill ${connected ? "online" : ""}`}>
           {connected ? "BACKEND ONLINE" : "CONNECTING"}
