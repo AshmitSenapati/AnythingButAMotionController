@@ -1,5 +1,6 @@
 # Dependencies
-node_modules/
+client/node_modules/
+server/node_modules/
 .pnp
 .pnp.js
 
@@ -17,6 +18,13 @@ build/
 .env.test.local
 .env.production.local
 *.env
+*.jks
+*.keystore
+*.p12
+*.p8
+*.key
+*.pem
+*.mobileprovision
 
 # Debug and runtime logs
 logs/
